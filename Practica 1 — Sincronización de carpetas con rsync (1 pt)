@@ -1,0 +1,103 @@
+================================
+1) CREAR LA CARPETA Y LOS ARCHIVOS
+================================
+
+sudo apt-get install rsync
+
+# Crear carpeta en el servidor primario donde estarán los archivos a sincronizar
+mkdir -p ~/datos_sync
+
+# Entrar en la carpeta creada
+cd ~/datos_sync
+
+# Crear 100 archivos (file001.txt, file002.txt, ..., file100.txt)
+# 'seq -w 1 100' genera números con ceros a la izquierda
+for i in $(seq -w 1 100); do touch "file${i}.txt"; done
+
+# Verificar que se hayan creado 100 archivos
+ls -1 | wc -l
+
+
+# ================================
+# 2) CONFIGURAR ACCESO SSH SIN CONTRASEÑA
+# ================================
+
+# Generar llave SSH (solo si no existe), sin passphrase
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+
+# Copiar la clave pública al servidor secundario
+# Sustituir usuario@IP por los reales del servidor secundario
+ssh-copy-id leury@192.168.100.20
+
+# Probar conexión SSH al servidor secundario
+ssh leury@192.168.100.20 'hostname && whoami'
+
+
+# ================================
+# 3) PRUEBA MANUAL DE RSYNC
+# ================================
+
+# Sincronizar el contenido de ~/datos_sync hacia el servidor secundario
+# -a: preserva permisos y fechas
+# -v: verbose (muestra el progreso)
+# -z: comprime datos en la transferencia
+# --delete: elimina en destino lo que no existe en origen
+rsync -avz --delete ~/datos_sync/ leury@192.168.100.20:/home/leury/datos_sync/
+
+# Verificar en el servidor secundario que los archivos llegaron
+ssh leury@192.168.100.20 'ls -1 /home/leury/datos_sync | wc -l'
+
+
+# ================================
+# 4) CREAR SCRIPT DE SINCRONIZACIÓN
+# ================================
+
+# Crear el archivo del script en /usr/local/bin
+sudo nano /usr/local/bin/sync_datos.sh
+
+# ---- Contenido del script ----
+#!/usr/bin/env bash
+SRC_DIR="$HOME/datos_sync/"
+DST_USER="leury"
+DST_HOST="192.168.100.20"
+DST_DIR="/home/leury/datos_sync/"
+LOG="/var/log/rsync-sync.log"
+
+{
+  echo "==== $(date '+%F %T') Iniciando sync ===="
+  rsync -avz --delete "$SRC_DIR" "${DST_USER}@${DST_HOST}:${DST_DIR}"
+  echo "==== $(date '+%F %T') Sync OK ===="
+} >> "$LOG" 2>&1
+# ---- Guardar y salir (CTRL+O, ENTER, CTRL+X) ----
+
+# Dar permisos de ejecución al script
+sudo chmod +x /usr/local/bin/sync_datos.sh
+
+
+# ================================
+# 5) CREAR TAREA EN CRONTAB
+# ================================
+
+# Editar el crontab del usuario actual
+crontab -e
+
+# Añadir estas líneas (PATH y SHELL para evitar errores, tarea cada 1 minuto)
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+* * * * * /usr/local/bin/sync_datos.sh
+
+# Guardar y salir
+
+
+# ================================
+# 6) PROBAR EL FUNCIONAMIENTO DEL CRON
+# ================================
+
+# Crear un archivo nuevo en el servidor primario
+date > ~/datos_sync/test-$(date +%s).txt
+
+# Esperar 1 minuto y comprobar en el servidor secundario
+ssh leury@192.168.100.20 'ls -l /home/leury/datos_sync | tail -n 5'
+
+# Ver el log de sincronización en el servidor primario
+sudo tail -n 20 /var/log/rsync-sync.log
