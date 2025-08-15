@@ -11,3 +11,258 @@ sudo systemctl enable keepalived
 ip a
 sudo systemctl stop keepalived
 sudo systemctl start keepalived
+
+
+
+
+
+
+
+
+
+
+
+
+###############################################
+# 🔎 COMÚN (EJECUTA EN CADA SERVIDOR)
+# - Revisa cómo se llama tu interfaz y tu IP
+###############################################
+ip -4 addr   # Mira tu interfaz (eth0/ens33/...) y tu IP
+
+###############################################
+# 🧰 COMÚN (EJECUTA EN CADA SERVIDOR)
+# - Instala Docker, Keepalived y Curl
+###############################################
+
+sudo apt update
+sudo apt -y install docker.io keepalived curl
+sudo systemctl enable --now docker
+docker --version
+keepalived --version
+
+################################################################################
+# 🌐 [SERVER1] — configura variables de este nodo (ajusta si tu interfaz no es eth0)
+# - MYIP = IP de este servidor
+# - PEERIP = IP del otro servidor
+# - VIP = IP flotante compartida
+################################################################################
+export IFACE=eth0
+export MYIP=192.168.100.25
+export PEERIP=192.168.100.22
+export VIP=192.168.100.10
+export VROUTER_ID=51
+export VRRP_PASS='claveVRRP123'
+export NOMBRE='Leury Reinoso'
+export MATRICULA='2024-1309'
+
+###############################################
+# 📄 [SERVER1] — Página web personalizada
+###############################################
+sudo mkdir -p /opt/web
+
+cat <<HTML | sudo tee /opt/web/index.html
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Servidor 1</title></head>
+<body style="font-family:Arial; text-align:center; margin-top:10%;">
+  <h1>Servidor 1</h1>
+  <h2>Nombre: ${Leury Reinoso}</h2>
+  <h2>Matrícula: ${2024-1309}</h2>
+</body>
+</html>
+HTML
+
+###############################################
+# 🌐 [SERVER1] — NGINX en Docker sirviendo la página
+###############################################
+
+sudo docker rm -f web 2>/dev/null || true
+sudo docker run -d --name web \
+  -p 80:80 \
+  -v /opt/web/index.html:/usr/share/nginx/html/index.html:ro \
+  --restart unless-stopped nginx:stable
+
+curl -s http://127.0.0.1 | head -n 3   # Prueba local
+
+###############################################
+# ❤️ [SERVER1] — Script de salud para Keepalived
+###############################################
+
+sudo mkdir -p /etc/keepalived
+
+cat <<'SH' | sudo tee /etc/keepalived/check_nginx.sh
+#!/usr/bin/env bash
+curl -fs http://127.0.0.1/ >/dev/null
+exit $?
+SH
+
+
+sudo chmod +x /etc/keepalived/check_nginx.sh
+
+###############################################
+# 🛡️ [SERVER1] — Configuración de Keepalived (MASTER)
+# - Usa VRRP en unicast con el peer
+###############################################
+
+cat <<EOF | sudo tee /etc/keepalived/keepalived.conf
+
+vrrp_script chk_web {
+  script "/etc/keepalived/check_nginx.sh"
+  interval 2
+  timeout 2
+  fall 2
+  rise 2
+}
+
+vrrp_instance VI_${VROUTER_ID} {
+  state MASTER
+  interface ${IFACE}
+  virtual_router_id ${VROUTER_ID}
+  priority 110
+  advert_int 1
+  authentication {
+    auth_type PASS
+    auth_pass ${VRRP_PASS}
+  }
+  unicast_src_ip ${MYIP}
+  unicast_peer {
+    ${PEERIP}
+  }
+  track_script { chk_web }
+  virtual_ipaddress {
+    ${VIP}/24 dev ${IFACE}
+  }
+}
+EOF
+
+
+###############################################
+# ▶️ [SERVER1] — Arranca y verifica Keepalived
+###############################################
+
+sudo systemctl enable --now keepalived
+
+sudo systemctl status keepalived --no-pager
+ip addr show dev ${IFACE} | grep "${VIP}" || echo "Sin VIP en SERVER1 (es normal si la tiene SERVER2)"
+
+################################################################################
+
+# 🌐 [SERVER2] — configura variables de este nodo (ajusta si tu interfaz no es eth0)
+# - MYIP = IP de este servidor
+# - PEERIP = IP del otro servidor
+# - VIP = IP flotante compartida
+################################################################################
+export IFACE=eth0
+export MYIP=192.168.100.22
+export PEERIP=192.168.100.25
+export VIP=192.168.100.10
+export VROUTER_ID=51
+export VRRP_PASS='claveVRRP123'
+export NOMBRE='Leury Reinoso'
+export MATRICULA='2024-1309'
+
+
+
+###############################################
+# 📄 [SERVER2] — Página web personalizada
+###############################################
+
+sudo mkdir -p /opt/web
+
+cat <<HTML | sudo tee /opt/web/index.html
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Servidor 2</title></head>
+<body style="font-family:Arial; text-align:center; margin-top:10%;">
+  <h1>Servidor 2</h1>
+  <h2>Nombre: ${Leury Reinoso}</h2>
+  <h2>Matrícula: ${2024-1309}</h2>
+</body>
+</html>
+HTML
+
+
+
+###############################################
+# 🌐 [SERVER2] — NGINX en Docker sirviendo la página
+###############################################
+sudo docker rm -f web 2>/dev/null || true
+
+sudo docker run -d --name web \
+  -p 80:80 \
+  -v /opt/web/index.html:/usr/share/nginx/html/index.html:ro \
+  --restart unless-stopped nginx:stable
+curl -s http://127.0.0.1 | head -n 3   # Prueba local
+
+###############################################
+# ❤️ [SERVER2] — Script de salud para Keepalived
+###############################################
+
+sudo mkdir -p /etc/keepalived
+
+cat <<'SH' | sudo tee /etc/keepalived/check_nginx.sh
+#!/usr/bin/env bash
+curl -fs http://127.0.0.1/ >/dev/null
+exit $?
+SH
+
+sudo chmod +x /etc/keepalived/check_nginx.sh
+
+###############################################
+# 🛡️ [SERVER2] — Configuración de Keepalived (BACKUP)
+###############################################
+
+cat <<EOF | sudo tee /etc/keepalived/keepalived.conf
+
+vrrp_script chk_web {
+  script "/etc/keepalived/check_nginx.sh"
+  interval 2
+  timeout 2
+  fall 2
+  rise 2
+}
+
+vrrp_instance VI_${VROUTER_ID} {
+  state BACKUP
+  interface ${IFACE}
+  virtual_router_id ${VROUTER_ID}
+  priority 100
+  advert_int 1
+  authentication {
+    auth_type PASS
+    auth_pass ${VRRP_PASS}
+  }
+  unicast_src_ip ${192.168.100.22}
+  unicast_peer {
+    ${192.168.100.25}
+  }
+  track_script { chk_web }
+  virtual_ipaddress {
+    ${VIP}/24 dev ${IFACE}
+  }
+}
+EOF
+
+###############################################
+# ▶️ [SERVER2] — Arranca y verifica Keepalived
+###############################################
+
+sudo systemctl enable --now keepalived
+
+sudo systemctl status keepalived --no-pager
+ip addr show dev ${IFACE} | grep "${VIP}" || echo "Sin VIP en SERVER2 (es normal si la tiene SERVER1)"
+
+###############################################
+# ✅ PRUEBA DESDE CUALQUIER HOST DE LA MISMA RED
+###############################################
+
+curl http://192.168.100.10     # Debe mostrar la página del nodo activo
+
+###############################################
+# 🔁 PRUEBA DE FAILOVER (en el nodo que tenga la VIP)
+###############################################
+sudo docker stop web   # Simula caída de la app
+curl http://${VIP}     # Ahora debe responder el otro servidor
+sudo docker start web  # Restaura el contenedor
+sudo systemctl restart keepalived
+
